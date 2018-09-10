@@ -13,7 +13,7 @@ import pandas
 import threading
 from google.cloud import bigquery
 from google.api_core import exceptions
-from config import LIVE_SCHEMA
+from price_fetcher.config import LIVE_SCHEMA
 
 # logging.basicConfig(filename='bigQuery.log', level=logging.ERROR)
 
@@ -23,11 +23,12 @@ class GoogleQuery:
     """
     client = bigquery.Client()
 
-    def __init__(self, ticker, dataset_id, table_id):
+    def __init__(self, ticker, dataset_id, table_id=None):
         """
         :param str dataset_id: name of the new dataset
         """
         self._ticker = ticker
+        table_id = table_id or 'live_' + ticker
         self.dataset_id = self.read_or_new_dataset(dataset_id).dataset_id
         self.table_id = self.creat_table(table_id, LIVE_SCHEMA)
 
@@ -86,7 +87,7 @@ class GoogleQuery:
                                                                                table=table,
                                                                                limit=last)
         else:
-            raise Exception()
+            raise ValueError('Either start or last must be defined!')
         query_job = GoogleQuery.client.query(query, location='US')
         rows = [row.values() for row in query_job]
         result = pandas.DataFrame(data=rows, columns=['Time', 'Price', 'Volume'])

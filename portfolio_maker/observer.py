@@ -10,9 +10,31 @@ PyCharm - the name of the IDE in which the file will be created.
 """
 
 from google.cloud import pubsub_v1
-# import time
+from price_fetcher.bigquery import GoogleQuery
+from ttp_model.dataset import AcquireData, Labels
 import pickle
+import pandas as pd
+import tensorflow as tf
+import datetime
 
+
+class Rnn:
+    def __init__(self):
+        self.chunck_size = 72
+        self.n_chuncks = 10
+        self.sess = tf.Session()
+        # First let's load meta graph and restore weights
+        saver = tf.train.import_meta_graph('ttp_model/my_model.ckpt.meta')
+        saver.restore(self.sess, tf.train.latest_checkpoint('ttp_model'))
+        graph = tf.get_default_graph()
+        self.xx = graph.get_tensor_by_name("input:0")
+        output = graph.get_tensor_by_name("rnn_model:0")
+        self.prediction = tf.argmax(output, 1)
+
+    def predict(self, data):
+        feed_dict = {self.xx: data.reshape((-1, self.n_chuncks, self.chunck_size))}
+        decition = self.sess.run(self.prediction, feed_dict)
+        return decition
 
 class Observer:
     """
@@ -22,17 +44,55 @@ class Observer:
         self.tickers = tickers
         self.strategy = strategy
         self.instruments = {}
+        self._freq = 10
+        self._data_processor = AcquireData()
+        self.rnn = Rnn()
+
+    def initiate(self):
+        for ticker in self.tickers:
+            google = GoogleQuery(ticker, dataset_id='my_dataset')
+            query = google.query(last=3600)
+            query = query.sort_index()
+            if query.empty:
+                continue
+            dates = list(set(query.index.date))
+            print(ticker)
+            result = pd.DataFrame(columns=['Price', 'Volume'])
+            for date in dates:
+                q_start = query[query.index.date == date].index[0]
+                start = max([datetime.datetime(date.year, date.month, date.day, 8, 30), q_start])
+                end = datetime.datetime(date.year, date.month, date.day, 15, 0)
+                if date == datetime.date.today():
+                    end = min([end, datetime.datetime.now() - datetime.timedelta(seconds=300)])
+                df = pd.DataFrame(index=pd.date_range(start=start, end=end, freq=str(self._freq) + 'S'),
+                                  columns=['Price', 'Volume'])
+                df.index.name = 'Time'
+                df = pd.merge_asof(df, query.sort_index(), left_index=True, right_index=True)
+                df = df.rename(columns={'Price_y': 'Price', 'Volume_y': 'Volume'})
+                df = df.drop([col for col in df.columns if col.endswith('_x')], axis=1)
+                result = result.append(df)
+            result = result.sort_index().tail(3600//self._freq)
+            self.instruments.update({ticker: result})
 
     def receive_messages(self, project, subscription_name):
         """Receives messages from a pull subscription."""
         subscriber = pubsub_v1.SubscriberClient()
         subscription_path = subscriber.subscription_path(project, subscription_name)
-
+        old_dt = datetime.datetime.now()
         def _callback(message):
-            print('Received message: {}'.format(message.data))
-            instrument = pickle.loads(message.data)
-            instrument.score = self.strategy.score(instrument)
-            self.instruments.update({instrument.ticker: instrument})
+            # print('Received message: {}'.format(message.data))
+            data = pickle.loads(message.data)
+            ticker = data.get('ticker')
+            current_position = self._update(data)
+            if current_position is not None:
+                label = self.rnn.predict(current_position)
+                if label == Labels.BUY:
+                    new_dt = datetime.datetime.now()
+                    if (new_dt - old_dt).seconds > 30:
+                        old_dt = new_dt
+                        print('Predicted BUY for {0} at {1} at price {2}'.format(ticker,
+                                                                                 new_dt,
+                                                                                 data.get('Price')))
             if message.attributes:
                 print('Attributes:')
                 for key in message.attributes:
@@ -49,19 +109,22 @@ class Observer:
         # while True:
         #     time.sleep(60)
 
-    def _get_trades(self, scores, threshhold):
-        events = {}
-        long = scores[scores['Score'] > 70]
-        long_sum = long.apply(np.sum) - 70. * len(long)
+    def _update(self, data):
+        ticker = data.pop('ticker')
+        df = self.instruments.get(ticker)
+        if df is not None:
+            new_row = pd.DataFrame.from_dict({'Time': [datetime.datetime.now()],
+                                              'Price': data.get('Price'),
+                                              'Volume': data.get('Volume')}
+                                             ).set_index('Time')
+            df = df.append(new_row).sort_index()
+            df = df.tail(3600)
+            self.instruments.update({ticker: df})
+            for period in range(60, 1201, 300):
+                df = self._data_processor.add_feature(df, period)
+            features = [col for col in df.columns if col.startswith('F')]
+            df = df[features]
+            last_row = df.tail(1).values.astype(float)
+            # print(last_row)
+            return last_row
 
-        for row in long.iterrows():
-            size = int((row.score - 70.) / long_sum * self._balance / row.Instrument.price)
-            if size < threshhold:
-                continue
-            if not events.get(row.Ticker, None):
-                events.update({row.Ticker: Event(row.Instrument)})
-                events.get(row.Ticker).open(size)
-            elif not -threshhold < (events.get(row.Ticker).size() - size) < threshhold:
-                new_size = size - events.get(row.Ticker).size()
-                events.get(row.Ticker).add(new_size)
-        return events

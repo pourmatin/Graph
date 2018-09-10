@@ -9,9 +9,6 @@ Hossein - the login name of the current user.
 PyCharm - the name of the IDE in which the file will be created.
 """
 from google.cloud import pubsub_v1
-from kernel import Strategy
-import pickle
-import time
 
 
 def list_subscriptions_in_topic(project, topic_name):
@@ -97,4 +94,3 @@ def update_subscription(project, subscription_name, endpoint):
     print('New endpoint for subscription is: {}'.format(
         result.push_config))
     # [END pubsub_update_push_configuration]
-

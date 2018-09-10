@@ -35,7 +35,7 @@ class Instrument:
         self._iex = Iex('iexfinance', self.ticker)
         self._price_history = None
         self.gquery = GoogleQuery(ticker=name, dataset_id='my_dataset', table_id='live_' + name)
-        self.latest_info = {'Price': None, 'Volume': None}
+        self.latest_info = {'Time': None, 'Ticker': name, 'Price': None, 'Volume': None}
         self.changed = True
         self._timezone = 'America/Chicago'
 
@@ -117,13 +117,15 @@ class Instrument:
         gets the price, stats, news and financial updates from the server and calls the setters
 
         """
+        local_dt = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc).astimezone(tz=pytz.timezone(self.timezone))
+        local_dt = local_dt.replace(tzinfo=None)
         try:
             price = self._iex.price()
             vol = self._iex.volume()
             self.changed = self.latest_info.get('Price') != price
             if self.changed:
                 self._snapshot(price, vol)
-                self.latest_info.update({'Price': price, 'Volume': vol})
+                self.latest_info.update({'Time': local_dt, 'Price': price, 'Volume': vol})
         except (ConnectionError, SystemError, exceptions.ConnectionError):
             self.changed = False
         # stats = obj.stats()

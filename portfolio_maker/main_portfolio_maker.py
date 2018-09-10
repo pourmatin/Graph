@@ -22,10 +22,10 @@ if __name__ == '__main__':
     topics = list_topics(PROJECT_ID)
     topics = [str(topic).split('/')[-1][:-2] for topic in topics if 'live_publisher_' in str(topic)]
     subscriptions = [create_subscription(PROJECT_ID, topic, 'live_writer_' + str(i))
-                     for i, topic in enumerate(topics)]
-    strategy = Strategy(kernel='bollinger')
-    observer = Observer(tickers=TICKERS, strategy=strategy)
+                     for i, topic in enumerate(topics[:1])]
+    observer = Observer(tickers=['AAPL'])
+    observer.initiate()
     for i in range(len(topics)):
-        observer.receive_messages(PROJECT_ID, 'ohlc_writer_' + str(i))
+        observer.receive_messages(PROJECT_ID, 'live_writer_' + str(i))
     while True:
         time.sleep(60)

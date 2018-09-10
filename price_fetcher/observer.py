@@ -46,17 +46,6 @@ class PriceFetcher:
         ithread = threading.current_thread().name
         create_topic(PROJECT_ID, self._topic + ithread)
 
-    def _get_score(self):
-        tickers = [inst.ticker for inst in self.instruments]
-        scores = [inst.score for inst in self.instruments]
-        df = pandas.DataFrame({
-                                'Ticker': tickers,
-                                'Instrument': self.instruments,
-                                'Score': scores
-                            })
-        df = df.sort_values('Score', ascending=False)
-        return df
-
     @classmethod
     def _publish_messages(cls, topic_name, data):
         """
@@ -97,7 +86,6 @@ class PriceFetcher:
                 if instrument.changed:
                     instrument.write_live()
                     to_publish = instrument.latest_info
-                    to_publish.update({'ticker': instrument.ticker})
                     self._publish_messages(self._topic + ithread, to_publish)
             except Exception as e:
                 if 'connection' not in str(e).lower():
