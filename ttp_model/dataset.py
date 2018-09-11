@@ -211,7 +211,6 @@ class AcquireData:
         :return: a dataframe with the moving average
         """
         ma_type = ma_type or 'sma'
-        period = period or self.period
         if field:
             data = data[field]
         if ma_type.lower() == 'sma':
@@ -222,7 +221,7 @@ class AcquireData:
             raise ValueError('{0} is not a known moving average type!'.format(ma_type))
         return profile
 
-    def moving_standard_deviation(self, data, period=None, ma_type=None):
+    def moving_standard_deviation(self, data, period=None, ma_type=None, field=None):
         """
         Method to calculate the moving standard deviation
         :param data: the dataframe
@@ -230,13 +229,13 @@ class AcquireData:
         :param str ma_type: type of moving average, either simple, 'sma' or exponensial, 'ema'
         :return:
         """
-        period = period or self.period
+        field = field or 'Price
         if ma_type.lower() == 'sma':
-            profile = pd.rolling_std(data['Price'], period / self._freq, min_periods=0)
+            profile = pd.rolling_std(data[field], period / self._freq, min_periods=0)
         elif ma_type.lower() == 'ema':
-            mean = self.moving_average(data, period, ma_type=ma_type, field='Price')
+            mean = self.moving_average(data, period, ma_type=ma_type, field=field)
             mean_sq = mean * mean
-            sq_field = data['Price'] * data['Price']
+            sq_field = data[field] * data[field]
             sq_mean = self.moving_average(sq_field, period, ma_type=ma_type)
             profile = numpy.sqrt(sq_mean - mean_sq)
             profile = profile.fillna(0)
@@ -254,36 +253,36 @@ class AcquireData:
     
     @staticmethod
     def relative_strength_index(df, period):
-    """Calculate Relative Strength Index(RSI) for given data.
-    
-    :param df: pandas.DataFrame
-    :param period: 
-    :return: pandas.DataFrame
-    """
-    i = 0
-    UpI = [0]
-    DoI = [0]
-    while i + 1 <= df.index[-1]:
-        UpMove = df.loc[i + 1, 'High'] - df.loc[i, 'High']
-        DoMove = df.loc[i, 'Low'] - df.loc[i + 1, 'Low']
-        if UpMove > DoMove and UpMove > 0:
-            UpD = UpMove
-        else:
-            UpD = 0
-        UpI.append(UpD)
-        if DoMove > UpMove and DoMove > 0:
-            DoD = DoMove
-        else:
-            DoD = 0
-        DoI.append(DoD)
-        i = i + 1
-    UpI = pd.Series(UpI)
-    DoI = pd.Series(DoI)
-    PosDI = pd.Series(UpI.ewm(span=period, min_periods=n).mean())
-    NegDI = pd.Series(DoI.ewm(span=period, min_periods=n).mean())
-    RSI = pd.Series(PosDI / (PosDI + NegDI), name='RSI_' + str(period))
-    df = df.join(RSI)
-    return df
+        """Calculate Relative Strength Index(RSI) for given data.
+
+        :param df: pandas.DataFrame
+        :param period: 
+        :return: pandas.DataFrame
+        """
+        i = 0
+        UpI = [0]
+        DoI = [0]
+        while i + 1 <= df.index[-1]:
+            UpMove = df.loc[i + 1, 'High'] - df.loc[i, 'High']
+            DoMove = df.loc[i, 'Low'] - df.loc[i + 1, 'Low']
+            if UpMove > DoMove and UpMove > 0:
+                UpD = UpMove
+            else:
+                UpD = 0
+            UpI.append(UpD)
+            if DoMove > UpMove and DoMove > 0:
+                DoD = DoMove
+            else:
+                DoD = 0
+            DoI.append(DoD)
+            i = i + 1
+        UpI = pd.Series(UpI)
+        DoI = pd.Series(DoI)
+        PosDI = pd.Series(UpI.ewm(span=period, min_periods=n).mean())
+        NegDI = pd.Series(DoI.ewm(span=period, min_periods=n).mean())
+        RSI = pd.Series(PosDI / (PosDI + NegDI), name='RSI_' + str(period))
+        df = df.join(RSI)
+        return df
         
     def classify(self, data, period):
         """
@@ -316,7 +315,8 @@ class AcquireData:
         n_name = 'Fn' + str(period / 60)
 
         data[ema_name] = self.moving_average(data, period=period, ma_type='ema', field='Price')
-        data[sigma_name] = self.moving_standard_deviation(data, period=period, ma_type='ema')
+        data[sigma_name] = self.moving_standard_deviation(data, period=period, ma_type='ema', field=ema_name)
+        data[ema_name] = self.moving_average(data, period=period, ma_type='ema', field=ema_name)
         data[n_name] = data.apply(lambda x: (x['Price'] - x[ema_name]) / x[sigma_name] if x[sigma_name] != 0 else 0, axis=1)
         data['minute'] = data.apply(lambda x: x.index.hour * 60 + x.index.minute, axis=1)
         data['d' + n_name] = data[n_name].shift()
