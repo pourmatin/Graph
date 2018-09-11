@@ -251,7 +251,40 @@ class AcquireData:
         subset = subset[(subset.MA > p_up) | (subset.MA < p_down)]
         if not subset.empty:
             return subset.iloc[0].MA
-
+    
+    @staticmethod
+    def relative_strength_index(df, period):
+    """Calculate Relative Strength Index(RSI) for given data.
+    
+    :param df: pandas.DataFrame
+    :param period: 
+    :return: pandas.DataFrame
+    """
+    i = 0
+    UpI = [0]
+    DoI = [0]
+    while i + 1 <= df.index[-1]:
+        UpMove = df.loc[i + 1, 'High'] - df.loc[i, 'High']
+        DoMove = df.loc[i, 'Low'] - df.loc[i + 1, 'Low']
+        if UpMove > DoMove and UpMove > 0:
+            UpD = UpMove
+        else:
+            UpD = 0
+        UpI.append(UpD)
+        if DoMove > UpMove and DoMove > 0:
+            DoD = DoMove
+        else:
+            DoD = 0
+        DoI.append(DoD)
+        i = i + 1
+    UpI = pd.Series(UpI)
+    DoI = pd.Series(DoI)
+    PosDI = pd.Series(UpI.ewm(span=period, min_periods=n).mean())
+    NegDI = pd.Series(DoI.ewm(span=period, min_periods=n).mean())
+    RSI = pd.Series(PosDI / (PosDI + NegDI), name='RSI_' + str(period))
+    df = df.join(RSI)
+    return df
+        
     def classify(self, data, period):
         """
         the classifier method to get the labels for the training data
@@ -281,29 +314,13 @@ class AcquireData:
         ema_name = 'Fema' + str(period / 60)
         sigma_name = 'Fsigma' + str(period / 60)
         n_name = 'Fn' + str(period / 60)
-        temp = copy.deepcopy(data)
 
-        def _flip(df):
-            col = list(df.columns)
-            col.reverse()
-            return df[col]
-
-        ema = temp[ema_name] = self.moving_average(data, period=period, ma_type='ema', field='Price')
-        ema = ema.to_frame(ema_name)
-        sigma = temp[sigma_name] = self.moving_standard_deviation(data, period=period, ma_type='ema')
-        sigma = sigma.to_frame(sigma_name)
-        n = temp.apply(lambda x: (x['Price'] - x[ema_name]) / x[sigma_name] if x[sigma_name] != 0 else 0, axis=1)
-        n = n.to_frame(n_name)
-        for i in range(1, push_back):
-            ema[ema_name + '-' + str(i)] = ema[ema_name].shift(i)
-            n[n_name + str(i)] = n[n_name].shift(i)
-            sigma[sigma_name + str(i)] = sigma[sigma_name].shift(i)
-        ema = _flip(ema)
-        n = _flip(n)
-        sigma = _flip(sigma)
-        data = data.join(ema)
-        data = data.join(sigma)
-        data = data.join(n)
+        data[ema_name] = self.moving_average(data, period=period, ma_type='ema', field='Price')
+        data[sigma_name] = self.moving_standard_deviation(data, period=period, ma_type='ema')
+        data[n_name] = data.apply(lambda x: (x['Price'] - x[ema_name]) / x[sigma_name] if x[sigma_name] != 0 else 0, axis=1)
+        data['minute'] = data.apply(lambda x: x.index.hour * 60 + x.index.minute, axis=1)
+        data['d' + n_name] = data[n_name].shift()
+        data['RSI'] = self.relative_strength_index(data, 14)
         return data
 
     def build(self):
