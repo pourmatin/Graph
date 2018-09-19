@@ -38,7 +38,7 @@ class DataSet(object):
     Container class for a dataset (deprecated).
     """
     
-    def __init__(self, features, labels, one_hot=False, dtype=dtypes.float32, reshape=True, seed=None):
+    def __init__(self, features, labels, one_hot=False, dtype=dtypes.float32, reshape=True, seed=None, hm_classes=None):
         """
         Construct a DataSet.
         one_hot arg is used only if fake_data is true.  `dtype` can be either
@@ -55,7 +55,8 @@ class DataSet(object):
         assert features.shape[0] == labels.shape[0], (
           'features.shape: %s labels.shape: %s' % (features.shape, labels.shape))
         self._num_examples = features.shape[0]
-        
+        classes = list(set(labels))
+        hm_classes = hm_classes or int(max(classes)) + 1
         # Convert shape from [num examples, rows, columns, depth]
         # to [num examples, rows*columns] (assuming depth == 1)
         if reshape:
@@ -69,8 +70,6 @@ class DataSet(object):
         self._index_in_epoch = 0
 
         if one_hot:
-            classes = list(set(labels))
-            hm_classes = int(max(classes)) + 1
             hot_array = numpy.zeros((self._num_examples, hm_classes))
             hot_array[numpy.arange(self._num_examples), labels] = 1
             self._labels = hot_array
@@ -152,13 +151,14 @@ class AcquireData:
     def __init__(self,
                  tickers=None,
                  start_date=None,
-                 data_period=1200,
+                 data_period=600,
                  pos_limit=.003,
                  neg_limit=-.001,
                  forward_limit=1200,
                  backward_limit=600,
                  train_ratio=.7,
-                 valid_ratio=.1):
+                 valid_ratio=.1,
+                 path=None):
         self.tickers = tickers
         self._start_date = start_date or datetime.date(2018, 1, 1)
         self._pos = pos_limit
@@ -169,6 +169,7 @@ class AcquireData:
         self._valid_ratio = valid_ratio
         self._freq = 10
         self.period = data_period
+        self._path = path
 
     @functools.lru_cache(maxsize=None)
     def get_raw_data(self, ticker):
@@ -197,11 +198,13 @@ class AcquireData:
             df = df.rename(columns={'Price_y': 'Price', 'Volume_y': 'Volume'})
             df = df.drop([col for col in df.columns if col.endswith('_x')], axis=1)
             df['Ticker'] = ticker
+            p0 = df.iloc[0].Price
+            df['Change'] = df.apply(lambda x: (x.Price - p0) / p0, axis=1)
             result = result.append(df)
         result = result.sort_index()
         return result
 
-    def moving_average(self, data, period=None, ma_type=None, field=None):
+    def moving_average(self, data, period, ma_type=None, field=None):
         """
         gets the moving average to the data frame
         :param data: the dataframe
@@ -221,15 +224,16 @@ class AcquireData:
             raise ValueError('{0} is not a known moving average type!'.format(ma_type))
         return profile
 
-    def moving_standard_deviation(self, data, period=None, ma_type=None, field=None):
+    def moving_standard_deviation(self, data, period, ma_type=None, field=None):
         """
         Method to calculate the moving standard deviation
         :param data: the dataframe
         :param int period: the window of rolling average
         :param str ma_type: type of moving average, either simple, 'sma' or exponensial, 'ema'
+        :param field:
         :return:
         """
-        field = field or 'Price
+        field = field or 'Price'
         if ma_type.lower() == 'sma':
             profile = pd.rolling_std(data[field], period / self._freq, min_periods=0)
         elif ma_type.lower() == 'ema':
@@ -243,46 +247,45 @@ class AcquireData:
             raise ValueError('{0} is not a known moving average type!'.format(ma_type))
         return profile
 
-    def _get_crossing(self, subset):
-        p0 = subset.iloc[0].Price
+    def _find_next_extermum(self, subset):
+        p0 = subset.MA.iloc[0]
         p_up = (self._pos + 1.) * p0
         p_down = (self._neg + 1.) * p0
-        subset = subset[(subset.MA > p_up) | (subset.MA < p_down)]
-        if not subset.empty:
-            return subset.iloc[0].MA
-    
+        df = copy.deepcopy(subset)
+        df['min'] = df.MA[(df.MA.shift(1) > df.MA) & (df.MA.shift(-1) > df.MA)]
+        # df['min'] = df['min'].fillna(p_up)
+        df['max'] = df.MA[(df.MA.shift(1) < df.MA) & (df.MA.shift(-1) < df.MA)]
+        # df['max'] = df['max'].fillna(0)
+        for row in df.iterrows():
+            if ~df.isnull().loc[row[0], 'max']:
+                if row[1]['max'] > p_up:
+                    return Labels.BUY
+                else:
+                    return Labels.HOLD
+            elif ~df.isnull().loc[row[0], 'min']:
+                if row[1]['min'] < p_down:
+                    return Labels.SELL
+                else:
+                    return Labels.HOLD
+        return Labels.HOLD
+
     @staticmethod
-    def relative_strength_index(df, period):
+    def relative_strength_index(df, period, field=None):
         """Calculate Relative Strength Index(RSI) for given data.
 
         :param df: pandas.DataFrame
-        :param period: 
+        :param period:
+        :param field:
         :return: pandas.DataFrame
         """
-        i = 0
-        UpI = [0]
-        DoI = [0]
-        while i + 1 <= df.index[-1]:
-            UpMove = df.loc[i + 1, 'High'] - df.loc[i, 'High']
-            DoMove = df.loc[i, 'Low'] - df.loc[i + 1, 'Low']
-            if UpMove > DoMove and UpMove > 0:
-                UpD = UpMove
-            else:
-                UpD = 0
-            UpI.append(UpD)
-            if DoMove > UpMove and DoMove > 0:
-                DoD = DoMove
-            else:
-                DoD = 0
-            DoI.append(DoD)
-            i = i + 1
-        UpI = pd.Series(UpI)
-        DoI = pd.Series(DoI)
-        PosDI = pd.Series(UpI.ewm(span=period, min_periods=n).mean())
-        NegDI = pd.Series(DoI.ewm(span=period, min_periods=n).mean())
-        RSI = pd.Series(PosDI / (PosDI + NegDI), name='RSI_' + str(period))
-        df = df.join(RSI)
-        return df
+        field = field or 'Price'
+        temp = copy.deepcopy(df)
+        temp['Change'] = temp[field].diff()
+        temp['Gain'] = temp['Change'].apply(lambda x: max([x, 0]))
+        temp['Loss'] = temp['Change'].apply(lambda x: abs(min([x, 0])))
+        temp['AG'] = temp['Gain'].rolling(window=period).mean()
+        temp['AL'] = temp['Loss'].rolling(window=period).mean()
+        return temp.apply(lambda x: 100 - 100 / (1 + x.AG / x.AL) if x.AL != 0 else 0, axis=1)
         
     def classify(self, data, period):
         """
@@ -298,29 +301,35 @@ class AcquireData:
             start = datetime.datetime.utcfromtimestamp(ts)
             end = start + datetime.timedelta(seconds=self._frwd)
             subset = temp.loc[start:end]
-            p0 = subset[subset.Ticker == row.Ticker].iloc[0].Price
-            cross_value = self._get_crossing(subset)
-            if cross_value:
-                return Labels.BUY if cross_value > p0 else Labels.SELL
-            else:
+            if abs(row.Fn) < 4:
                 return Labels.HOLD
+            else:
+                return self._find_next_extermum(subset)
 
         temp['MA'] = self.moving_average(temp, period=period, ma_type='sma', field='Price')
         return temp.apply(_find_next_big_change, axis=1)
 
     def add_feature(self, data, period):
-        push_back = int(self._bcwd / self._freq)
-        ema_name = 'Fema' + str(period / 60)
-        sigma_name = 'Fsigma' + str(period / 60)
-        n_name = 'Fn' + str(period / 60)
+        """
+        creates the features
+        :param data:
+        :param period:
+        :return:
+        """
+        ema_name = 'Fema' + str(period // 60)
+        sigma_name = 'Fsigma' + str(period // 60)
+        n_name = 'Fn'
+        rsi_name = 'FRSI' + str(36)
+        cols = [ema_name, sigma_name, n_name, rsi_name]
 
-        data[ema_name] = self.moving_average(data, period=period, ma_type='ema', field='Price')
-        data[sigma_name] = self.moving_standard_deviation(data, period=period, ma_type='ema', field=ema_name)
-        data[ema_name] = self.moving_average(data, period=period, ma_type='ema', field=ema_name)
-        data[n_name] = data.apply(lambda x: (x['Price'] - x[ema_name]) / x[sigma_name] if x[sigma_name] != 0 else 0, axis=1)
-        data['minute'] = data.apply(lambda x: x.index.hour * 60 + x.index.minute, axis=1)
-        data['d' + n_name] = data[n_name].shift()
-        data['RSI'] = self.relative_strength_index(data, 14)
+        data[ema_name] = self.moving_average(data, period=period, ma_type='ema', field='Change')
+        data[sigma_name] = self.moving_standard_deviation(data, period=period, ma_type='ema', field='Change')
+        data[n_name] = data.apply(lambda x: (x['Change'] - x[ema_name]) / x[sigma_name] if x[sigma_name] != 0 else 0
+                                  , axis=1)
+        data[rsi_name] = self.relative_strength_index(data, 36)
+        for col in cols:
+            data['d' + col] = data[col].diff()
+            # data[col + '_rate'] = data.apply()
         return data
 
     def build(self):
@@ -328,30 +337,44 @@ class AcquireData:
         The main method to create the database
         :return: dataframe of features and labels
         """
-        data = pd.DataFrame(columns=['Price', 'Volume', 'Label'])
-        for ticker in self.tickers:
-            _data = self.get_raw_data(ticker)
-            if _data.empty:
-                continue
-            for period in range(60, self.period + 1, 300):
-                _data = self.add_feature(_data, period)
-            _data['Label'] = self.classify(_data, period=60)
-            _data = _data[self.period//self._freq:-self._frwd//self._freq]
-            data = data.append(_data)
+        if self._path:
+            data = pd.read_excel(self._path)
+        else:
+            data = pd.DataFrame(columns=['Price', 'Volume', 'Label'])
+            for ticker in self.tickers:
+                _data = self.get_raw_data(ticker)
+                if _data.empty:
+                    continue
+                # for period in range(300, 3600 + 1, 600):
+                # print(period)
+                _data = self.add_feature(_data, 55 * 60)
+                _data['Label'] = self.classify(_data, period=60)
+                _data = _data[2 * self.period//self._freq:-self._frwd//self._freq]
+                data = data.append(_data)
+            data = data[abs(data.Fn) > 2]
+            writer = pd.ExcelWriter('./data.xlsx', engine='xlsxwriter')
+            data.to_excel(writer)
+            writer.save()
+
+        # data = pd.DataFrame(data=numpy.random.normal((0, 10, 100), (.1, 1, 5), (10000, 3)),
+        #                     index=pd.date_range(start=datetime.datetime.now(), periods=10000, freq='10S'),
+        #                     columns=['F1', 'F2', 'F3'])
+        # data['Label'] = data.apply(lambda x: 1 if x.F1 * 3 + 5 * x.F2 - .5 * x.F3 > 0 else 0, axis=1)
         # tr_ind = data.sample(frac=self._train_ratio).index
-        tr_ind = data[data.index.date != datetime.date.today()]
+        tr_ind = data[data.index.date >= datetime.date(2018, 9, 17)].index
         y_tr = data[data.index.isin(tr_ind)]['Label'].values.astype(int)
         y_test = data[~data.index.isin(tr_ind)]['Label'].values.astype(int)
-        y_ts = y_test#[numpy.where(y_test == Labels.BUY)]
-        features = [col for col in data.columns if col.startswith('F')]
+        y_ts = y_test[numpy.where(y_test == Labels.BUY)]
+        features = [col for col in data.columns if col.startswith('F') or col.startswith('dF')]
         data = data[features]
         x_tr = data[data.index.isin(tr_ind)].values
         x_tr = x_tr.reshape(x_tr.shape[0], x_tr.shape[1], 1, 1)
         x_ts = data[~data.index.isin(tr_ind)].values
         x_ts = x_ts.reshape(x_ts.shape[0], x_ts.shape[1], 1, 1)
-        # x_ts = x_ts[numpy.where(y_test == Labels.BUY)]
+        x_ts = x_ts[numpy.where(y_test == Labels.BUY)]
         y_tr = numpy.reshape(y_tr, -1)
         y_ts = numpy.reshape(y_ts, -1)
-        dataset = Datasets(train=DataSet(x_tr, y_tr, one_hot=True),
-                           test=DataSet(x_ts, y_ts, one_hot=True))
+        dataset = Datasets(train=DataSet(x_tr, y_tr, one_hot=True, hm_classes=3),
+                           test=DataSet(x_ts, y_ts, one_hot=True, hm_classes=3)
+                           )
         return dataset
