@@ -58,17 +58,18 @@ class Model:
         :return: None
         """
         logits = self._model(self.xx)
-        loss = tf.sqrt(tf.reduce_mean(tf.square(self.yy - logits)))
-        # return tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=self.yy))
+        # loss = tf.sqrt(tf.reduce_mean(tf.square(self.yy - logits)))
+        loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=self.yy))
         optimize = tf.train.AdamOptimizer(learning_rate=self._lr).minimize(loss)
 
         init = tf.global_variables_initializer()
         with tf.Session() as sess:
             sess.run(init)
             for epoch in range(1, self.hm_epochs + 1):
-                for i in range(0, self.n_datapoints):
-                    sess.run(optimize, feed_dict={self.xx: self.dataset.train.features[i: i + self._batch_size],
-                                                  self.yy: self.dataset.train.labels[i: i + self._batch_size]})
+                for _ in range(self.n_datapoints // self._batch_size):
+                    epoch_x, epoch_y = self.dataset.train.next_batch(self._batch_size)
+                    sess.run(optimize, feed_dict={self.xx: epoch_x,
+                                                  self.yy: epoch_y})
                 loss_tr = sess.run(loss, feed_dict={self.xx: self.dataset.train.features,
                                                     self.yy: self.dataset.train.labels})
                 print('Epoch {0}, Loss: {1}'.format(epoch, loss_tr))
@@ -84,14 +85,14 @@ def main():
     the main function
     :return: None
     """
-    acquire = AcquireData(['AAPL', 'BAC'],
+    acquire = AcquireData(['AAPL'],
                           pos_limit=.001,
                           valid_ratio=0,
                           train_ratio=.75,
                           # path='./data.xlsx'
                           )  # , start_date=datetime.date(2018,9,12))
     data = acquire.build()
-    model = Model(data, layers=4, batches=128)
+    model = Model(data, epochs=100, layers=4, batches=128)
     model.train()
     # model.test()
 

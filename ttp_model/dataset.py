@@ -33,7 +33,7 @@ class Labels:
     SELL = 0
 
 
-class DataSet(object):
+class DataSet:
     """
     Container class for a dataset (deprecated).
     """
@@ -286,7 +286,12 @@ class AcquireData:
         temp['AG'] = temp['Gain'].rolling(window=period).mean()
         temp['AL'] = temp['Loss'].rolling(window=period).mean()
         return temp.apply(lambda x: 100 - 100 / (1 + x.AG / x.AL) if x.AL != 0 else 0, axis=1)
-        
+
+    def _ohlcm(self, data):
+        for row in data.itertuples():
+            label = row.Label
+
+
     def classify(self, data, period):
         """
         the classifier method to get the labels for the training data
@@ -301,10 +306,7 @@ class AcquireData:
             start = datetime.datetime.utcfromtimestamp(ts)
             end = start + datetime.timedelta(seconds=self._frwd)
             subset = temp.loc[start:end]
-            if abs(row.Fn) < 4:
-                return Labels.HOLD
-            else:
-                return self._find_next_extermum(subset)
+            return self._find_next_extermum(subset)
 
         temp['MA'] = self.moving_average(temp, period=period, ma_type='sma', field='Price')
         return temp.apply(_find_next_big_change, axis=1)
@@ -345,13 +347,11 @@ class AcquireData:
                 _data = self.get_raw_data(ticker)
                 if _data.empty:
                     continue
-                # for period in range(300, 3600 + 1, 600):
-                # print(period)
                 _data = self.add_feature(_data, 55 * 60)
                 _data['Label'] = self.classify(_data, period=60)
-                _data = _data[2 * self.period//self._freq:-self._frwd//self._freq]
+                _data = _data[self.period//self._freq:-self._frwd//self._freq]
+                _data = self._ohlcm(_data)
                 data = data.append(_data)
-            data = data[abs(data.Fn) > 2]
             writer = pd.ExcelWriter('./data.xlsx', engine='xlsxwriter')
             data.to_excel(writer)
             writer.save()
