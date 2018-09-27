@@ -102,12 +102,13 @@ class GoogleQuery:
         """
         table_ref = GoogleQuery.client.dataset(self.dataset_id).table(self.table_id)
         table = GoogleQuery.client.get_table(table_ref)
+        errors = None
         try:
             errors = GoogleQuery.client.insert_rows(table, rows)  # API request
         except exceptions.BadRequest as e:
             errors = [e]
+        except Exception as e:
+            logging.ERROR(e)
         if not errors:
             logging.info("Wrote {ticker} today's price in {table}".format(ticker=self._ticker, table=self.table_id))
-        else:
-            print(errors[0])
         return errors
