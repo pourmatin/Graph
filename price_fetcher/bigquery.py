@@ -13,7 +13,7 @@ import pandas
 import threading
 from google.cloud import bigquery
 from google.api_core import exceptions
-from price_fetcher.config import LIVE_SCHEMA
+from config import LIVE_SCHEMA
 
 # logging.basicConfig(filename='bigQuery.log', level=logging.ERROR)
 
