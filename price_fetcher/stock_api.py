@@ -10,6 +10,8 @@ PyCharm - the name of the IDE in which the file will be created.
 """
 from iexfinance import Stock
 from iex import stock
+import functools
+import iexfinance
 
 
 class Iex:
@@ -20,6 +22,7 @@ class Iex:
         self._api = api_name
         self._ticker = ticker
 
+    @functools.lru_cache(maxsize=None)
     def get_api(self):
         """
         creates the right api based on the name
@@ -35,17 +38,23 @@ class Iex:
         get the latest volume
         :return: double
         """
-        if self._api == 'iex':
-            return self.get_api().quote().get('latestVolume')
-        elif self._api == 'iexfinance':
-            return float(self.get_api().get_volume())
+        try:
+            if self._api == 'iex':
+                return self.get_api().quote().get('latestVolume')
+            elif self._api == 'iexfinance':
+                return float(self.get_api().get_volume())
+        except iexfinance.utils.exceptions.IEXQueryError:
+            return None
 
     def price(self):
         """
         get the latest price
         :return: int
         """
-        if self._api == 'iex':
-            return self.get_api().price()
-        elif self._api == 'iexfinance':
-            return self.get_api().get_price()
+        try:
+            if self._api == 'iex':
+                return self.get_api().price()
+            elif self._api == 'iexfinance':
+                return self.get_api().get_price()
+        except iexfinance.utils.exceptions.IEXQueryError:
+            return None

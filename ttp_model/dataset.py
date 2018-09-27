@@ -287,9 +287,15 @@ class AcquireData:
         temp['AL'] = temp['Loss'].rolling(window=period).mean()
         return temp.apply(lambda x: 100 - 100 / (1 + x.AG / x.AL) if x.AL != 0 else 0, axis=1)
 
+    @staticmethod
+    def _find_next_cluster(data, field=None):
+        field = field or 'Label'
+        for row in data.itertuples(index=False):
+            pass
+
+
     def _ohlcm(self, data):
-        for row in data.itertuples():
-            label = row.Label
+        subset = self._find_next_cluster(data)
 
 
     def classify(self, data, period):
@@ -361,7 +367,7 @@ class AcquireData:
         #                     columns=['F1', 'F2', 'F3'])
         # data['Label'] = data.apply(lambda x: 1 if x.F1 * 3 + 5 * x.F2 - .5 * x.F3 > 0 else 0, axis=1)
         # tr_ind = data.sample(frac=self._train_ratio).index
-        tr_ind = data[data.index.date >= datetime.date(2018, 9, 17)].index
+        tr_ind = data[data.index.date >= datetime.date(2018, 9, 20)].index
         y_tr = data[data.index.isin(tr_ind)]['Label'].values.astype(int)
         y_test = data[~data.index.isin(tr_ind)]['Label'].values.astype(int)
         y_ts = y_test[numpy.where(y_test == Labels.BUY)]
