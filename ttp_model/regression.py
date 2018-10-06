@@ -10,11 +10,11 @@ PyCharm - the name of the IDE in which the file will be created.
 """
 
 import tensorflow as tf
-# import numpy as np
+import datetime
+import threading
 from functools import lru_cache
-# from tensorflow.python.ops import rnn, rnn_cell
-from ttp_model.dataset import AcquireData
 from price_fetcher.config import TICKERS
+from ttp_model.utility import build
 
 
 class Model:
@@ -48,7 +48,7 @@ class Model:
         activation = data
         layer = None
         for i in range(len(dim) - 1):
-            layer = tf.add(tf.matmul(activation, weights[i]), bias[i])
+            layer = tf.add(tf.matmul(activation, weights[i]), bias[i], name='logits')
             activation = tf.nn.sigmoid(layer)
         return layer
 
@@ -63,6 +63,7 @@ class Model:
         optimize = tf.train.AdamOptimizer(learning_rate=self._lr).minimize(loss)
 
         init = tf.global_variables_initializer()
+        saver = tf.train.Saver()
         with tf.Session() as sess:
             sess.run(init)
             for epoch in range(1, self.hm_epochs + 1):
@@ -77,7 +78,24 @@ class Model:
             correct = tf.equal(tf.argmax(logits, 1), tf.argmax(self.yy, 1))
             accuracy = tf.reduce_mean(tf.cast(correct, 'float'))
             print('Accuracy:', sess.run([logits, accuracy], {self.xx: self.dataset.test.features,
-                                                   self.yy: self.dataset.test.labels}))
+                                                             self.yy: self.dataset.test.labels}))
+            saver.save(sess, "./my_model.ckpt")
+
+
+class DataAcquisition:
+    """
+    class to gather and process the data points
+    """
+    def __init__(self, tickers, pos_limit=.001, path='./data.xlsx', period=60, start_date=None):
+        self.tickers = tickers
+        self.pos = pos_limit
+        self.path = path
+        self.period = period
+        self.start_date = start_date
+        self.dataset = None
+
+    def build(self):
+        self.dataset = build(self.tickers, self.period, pos_limit=self.pos, path=self.path)
 
 
 def main():
@@ -85,13 +103,11 @@ def main():
     the main function
     :return: None
     """
-    acquire = AcquireData(['AAPL'],
-                          pos_limit=.001,
-                          valid_ratio=0,
-                          train_ratio=.75,
-                          # path='./data.xlsx'
-                          )  # , start_date=datetime.date(2018,9,12))
-    data = acquire.build()
+    data = build(TICKERS,
+                 pos_limit=.001,
+                  #path='./data.xlsx',
+                  period=60,
+                  )
     model = Model(data, epochs=100, layers=4, batches=128)
     model.train()
     # model.test()

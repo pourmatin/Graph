@@ -11,30 +11,43 @@ PyCharm - the name of the IDE in which the file will be created.
 
 from google.cloud import pubsub_v1
 from price_fetcher.bigquery import GoogleQuery
-from ttp_model.dataset import AcquireData, Labels
+from ttp_model.dataset import Labels
+from ttp_model.utility import process_query, relative_strength_index
 import pickle
 import pandas as pd
 import tensorflow as tf
 import datetime
+import copy
 
 
 class Rnn:
+    """
+    predictor class
+    """
     def __init__(self):
-        self.chunck_size = 72
-        self.n_chuncks = 10
+        self.chunck_size = 2
+        self.n_chuncks = 1
         self.sess = tf.Session()
         # First let's load meta graph and restore weights
         saver = tf.train.import_meta_graph('ttp_model/my_model.ckpt.meta')
         saver.restore(self.sess, tf.train.latest_checkpoint('ttp_model'))
         graph = tf.get_default_graph()
-        self.xx = graph.get_tensor_by_name("input:0")
-        output = graph.get_tensor_by_name("rnn_model:0")
-        self.prediction = tf.argmax(output, 1)
+        self.xx = graph.get_tensor_by_name("features:0")
+        logits = graph.get_tensor_by_name("logits:0")
+        self.prediction = tf.argmax(logits, 1)
+        # print(self.prediction.shape)
 
     def predict(self, data):
-        feed_dict = {self.xx: data.reshape((-1, self.n_chuncks, self.chunck_size))}
+        """
+
+        :param data:
+        :return:
+        """
+        feed_dict = {self.xx: data.reshape((1, -1))}
         decition = self.sess.run(self.prediction, feed_dict)
+        print(decition)
         return decition
+
 
 class Observer:
     """
@@ -45,10 +58,13 @@ class Observer:
         self.strategy = strategy
         self.instruments = {}
         self._freq = 10
-        self._data_processor = AcquireData()
         self.rnn = Rnn()
 
     def initiate(self):
+        """
+
+        :return:
+        """
         for ticker in self.tickers:
             google = GoogleQuery(ticker, dataset_id='my_dataset')
             query = google.query(last=3600)
@@ -79,10 +95,11 @@ class Observer:
         subscriber = pubsub_v1.SubscriberClient()
         subscription_path = subscriber.subscription_path(project, subscription_name)
         old_dt = datetime.datetime.now()
+
         def _callback(message):
             # print('Received message: {}'.format(message.data))
             data = pickle.loads(message.data)
-            ticker = data.get('ticker')
+            ticker = data.get('Ticker')
             current_position = self._update(data)
             if current_position is not None:
                 label = self.rnn.predict(current_position)
@@ -110,7 +127,7 @@ class Observer:
         #     time.sleep(60)
 
     def _update(self, data):
-        ticker = data.pop('ticker')
+        ticker = data.pop('Ticker')
         df = self.instruments.get(ticker)
         if df is not None:
             new_row = pd.DataFrame.from_dict({'Time': [datetime.datetime.now()],
@@ -120,11 +137,13 @@ class Observer:
             df = df.append(new_row).sort_index()
             df = df.tail(3600)
             self.instruments.update({ticker: df})
-            for period in range(60, 1201, 300):
-                df = self._data_processor.add_feature(df, period)
-            features = [col for col in df.columns if col.startswith('F')]
-            df = df[features]
-            last_row = df.tail(1).values.astype(float)
+            frame = copy.deepcopy(df)
+            frame['Ticker'] = ticker
+            frame = process_query(frame)
+            frame['FRSI'] = relative_strength_index(frame, 36)
+            frame['dFRSI'] = frame['FRSI'].diff()
+            features = ['FRSI', 'dFRSI']
+            frame = frame[features]
+            last_row = frame.tail(1).values.astype(float)
             # print(last_row)
             return last_row
-
