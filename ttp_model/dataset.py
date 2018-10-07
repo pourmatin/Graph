@@ -11,14 +11,10 @@ PyCharm - the name of the IDE in which the file will be created.
 
 import numpy
 import datetime
-import pandas as pd
 import collections
-import functools
-import copy
 
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import random_seed
-from price_fetcher.bigquery import GoogleQuery
 
 
 Datasets = collections.namedtuple('Datasets', ['train', 'test'])

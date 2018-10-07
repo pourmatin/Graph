@@ -10,11 +10,13 @@ PyCharm - the name of the IDE in which the file will be created.
 """
 
 import tensorflow as tf
-import datetime
-import threading
+# import datetime
+import logging
 from functools import lru_cache
 from price_fetcher.config import TICKERS
 from ttp_model.utility import build
+
+logging.basicConfig(filename='info.log', level=logging.INFO)
 
 
 class Model:
@@ -80,6 +82,7 @@ class Model:
             print('Accuracy:', sess.run([logits, accuracy], {self.xx: self.dataset.test.features,
                                                              self.yy: self.dataset.test.labels}))
             saver.save(sess, "./my_model.ckpt")
+            logging.info('Saved the model!')
 
 
 class DataAcquisition:

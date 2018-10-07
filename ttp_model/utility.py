@@ -13,9 +13,13 @@ import datetime
 import pandas as pd
 import copy
 import time
+import logging
 
 from ttp_model.dataset import Labels, Datasets, DataSet
 from price_fetcher.bigquery import GoogleQuery
+
+logging.basicConfig(filename='info.log', level=logging.INFO)
+
 
 def timeit(method):
     def timed(*args, **kw):
@@ -26,7 +30,7 @@ def timeit(method):
             name = kw.get('log_name', method.__name__.upper())
             kw['log_time'][name] = int((te - ts) * 1000)
         else:
-            print('%r  %2.2f s' % (method.__name__, (te - ts)))
+            logging.info('%r  %2.2f s' % (method.__name__, (te - ts)))
         return result
     return timed
 
@@ -40,7 +44,7 @@ def get_raw_data(ticker, start_date=None):
     query = google.query(start=start_date)
     query = query.sort_index()
     query['Ticker'] = ticker
-    print(ticker)
+    logging.info(ticker)
     return query
 
 
