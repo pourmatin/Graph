@@ -100,6 +100,14 @@ class Event:
         """
         return self._instrument
 
+    def change(self):
+        """
+        current return rate of the trade
+        :return: float
+        """
+        p1 = self.instrument.price
+        p0 = self.trades[-1].
+
     def _execute(self, size, action):
         """
         method to open the trade event for this object. the next trades of this object will be appended

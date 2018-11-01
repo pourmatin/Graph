@@ -10,13 +10,14 @@ PyCharm - the name of the IDE in which the file will be created.
 """
 
 import tensorflow as tf
-# import datetime
 import logging
 from functools import lru_cache
-from price_fetcher.config import TICKERS
+# from price_fetcher.config import TICKERS
+from ttp_model.dataset import Labels
+from tensorflow.python.ops import rnn, rnn_cell
 from ttp_model.utility import build
 
-logging.basicConfig(filename='info.log', level=logging.INFO)
+# logging.basicConfig(filename='info.log', level=logging.INFO)
 
 
 class Model:
@@ -85,20 +86,92 @@ class Model:
             logging.info('Saved the model!')
 
 
-class DataAcquisition:
+class RnnModel:
     """
-    class to gather and process the data points
+    The class to create and train the learning model
     """
-    def __init__(self, tickers, pos_limit=.001, path='./data.xlsx', period=60, start_date=None):
-        self.tickers = tickers
-        self.pos = pos_limit
-        self.path = path
-        self.period = period
-        self.start_date = start_date
-        self.dataset = None
+    FINE = .001
 
-    def build(self):
-        self.dataset = build(self.tickers, self.period, pos_limit=self.pos, path=self.path)
+    def __init__(self, dataset, epochs=10, nodes=None, layers=1, batches=100, learning_rate=.01):
+        self.dataset = dataset
+        self.hm_epochs = epochs
+        self.n_features = dataset.train.features.shape[1]
+        self.n_labels = dataset.train.labels.shape[1]
+        self.n_nodes = nodes or [32] * layers
+        self.n_layers = layers
+        self.n_datapoints = dataset.train.features.shape[0]
+        self._batch_size = batches
+        self._lr = learning_rate
+        self.xx = tf.placeholder('float32', [None, 1, self.n_features], name='features')
+        self.yy = tf.placeholder('float32', name='labels')
+
+    @staticmethod
+    def _weights(shape, name=None):
+        initializer = tf.random_normal(shape)
+        return tf.Variable(initializer, name=name)
+
+    @lru_cache()
+    def _model(self, data):
+        layer = {'weights': tf.Variable(tf.random_normal([self._batch_size, self.n_labels])),
+                 'biases': tf.Variable(tf.random_normal([self.n_labels]))}
+        x = tf.transpose(data, [1, 0, 2])
+        x = tf.reshape(x, [-1, self.n_features])
+        x = tf.split(x, 1)
+
+        lstm_cell = rnn_cell.LSTMCell(self._batch_size, name='basic_lstm_cell')
+        outputs, states = rnn.static_rnn(lstm_cell, x, dtype=tf.float32)
+
+        output = tf.add(tf.matmul(outputs[-1], layer['weights']), layer['biases'], name='rnn_model')
+
+        return output
+
+    def _cost(self, args):
+        cost = 0
+        logits = args[0]
+        yy = args[1]
+        if tf.argmax(yy, 1) == Labels.BUY:
+            cost += self.FINE if tf.argmax(logits, 1) == Labels.HOLD else \
+                2 * self.FINE if tf.argmax(logits, 1) == Labels.SELL else 0
+        elif tf.argmax(yy, 1) == Labels.SELL:
+            cost += self.FINE if tf.argmax(logits, 1) == Labels.BUY else 0
+        else:
+            cost += self.FINE if tf.argmax(logits, 1) == Labels.BUY else 0
+        return cost
+
+    def train(self):
+        """
+        the traing function
+        :return: None
+        """
+        logits = self._model(self.xx)
+        cost = tf.reduce_mean(tf.map_fn(self._cost, (logits, self.yy), dtype=tf.float32))
+        # cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=self.yy))
+        optimizer = tf.train.AdamOptimizer().minimize(cost)
+
+        with tf.Session() as sess:
+            sess.run(tf.global_variables_initializer())
+            saver = tf.train.Saver()
+
+            for epoch in range(self.hm_epochs):
+                epoch_loss = 0
+                for _ in range(int(self.dataset.train.num_examples / self._batch_size)):
+                    epoch_x, epoch_y = self.dataset.train.next_batch(self._batch_size)
+                    epoch_x = epoch_x.reshape((self._batch_size, 1, self.n_features))
+
+                    _, c = sess.run([optimizer, cost], feed_dict={self.xx: epoch_x, self.yy: epoch_y})
+                    epoch_loss += c
+
+                print('Epoch', epoch, 'completed out of', self.hm_epochs, 'loss:', epoch_loss)
+
+            correct = tf.equal(tf.argmax(logits, 1), tf.argmax(self.yy, 1))
+
+            accuracy = tf.reduce_mean(tf.cast(correct, 'float'))
+            print('Logits:', logits.eval({self.xx: self.dataset.test.features.reshape((-1, 1, self.n_features))}))
+            print('Accuracy:',
+                  accuracy.eval({self.xx: self.dataset.test.features.reshape((-1, 1, self.n_features)),
+                                 self.yy: self.dataset.test.labels}))
+            saver.save(sess, "./my_model.ckpt")
+            logging.info('Saved the model!')
 
 
 def main():
@@ -106,82 +179,17 @@ def main():
     the main function
     :return: None
     """
-    data = build(TICKERS,
+    data = build(['BAC'],
                  pos_limit=.001,
-                  #path='./data.xlsx',
-                  period=60,
-                  )
-    model = Model(data, epochs=100, layers=4, batches=128)
+                 path='./data.xlsx',
+                 period=1200,
+                 resample=1,
+                 # start_date=datetime.date(2018,10,10)
+                 )
+    model = RnnModel(data, epochs=100, layers=4, batches=128)
     model.train()
     # model.test()
 
 
 if __name__ == '__main__':
     main()
-
-# def recurrnet_neural_network_model(data):
-#     """
-#     The main regression modeler
-#     :param data: the raw input data
-#     :return: the output labels
-#     """
-#     layer = {'weights': tf.Variable(tf.random_normal([rnn_size, n_classes])),
-#              'biases': tf.Variable(tf.random_normal([n_classes]))}
-#     x = tf.transpose(data, [1, 0, 2])
-#     x = tf.reshape(x, [-1, chunck_size])
-#     x = tf.split(x, n_chuncks)
-#
-#     lstm_cell = rnn_cell.LSTMCell(rnn_size, name='basic_lstm_cell')
-#     outputs, states = rnn.static_rnn(lstm_cell, x, dtype=tf.float32)
-#
-#     output = tf.add(tf.matmul(outputs[-1], layer['weights']), layer['biases'], name='rnn_model')
-#
-#     return output
-
-
-# def train_neural_network(data):
-#     """
-#     The ttp_model function
-#     :param data: input data
-#     :return: None
-#     """
-#     print('Starting...')
-#     prediction = recurrnet_neural_network_model(data)
-#     # OLD VERSION:
-#     # cost = tf.reduce_mean( tf.nn.softmax_cross_entropy_with_logits(prediction,y) )
-#     # NEW:
-#     cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=prediction, labels=yy))
-#     optimizer = tf.train.AdamOptimizer(learning_rate=.001).minimize(cost)
-#
-#     # Add ops to save and restore all the variables.
-#     saver = tf.train.Saver()
-#
-#     with tf.Session() as sess:
-#         # OLD:
-#         # sess.run(tf.initialize_all_variables())
-#         # NEW:
-#         sess.run(tf.global_variables_initializer())
-#
-#         for epoch in range(hm_epochs):
-#             epoch_loss = 0
-#             for _ in range(int(mnist.train.num_examples / batch_size)):
-#                 epoch_x, epoch_y = mnist.train.next_batch(batch_size)
-#                 epoch_x = epoch_x.reshape((batch_size, n_chuncks, chunck_size))
-#                 _, c = sess.run([optimizer, cost], feed_dict={xx: epoch_x, yy: epoch_y})
-#                 epoch_loss += c
-#
-#             print('Epoch', epoch, 'completed out of', hm_epochs, 'loss:', epoch_loss)
-#
-#         correct = tf.equal(tf.argmax(prediction, 1), tf.argmax(yy, 1))
-#         pred = tf.maximum(prediction, 1)
-#
-#         accuracy = tf.reduce_mean(tf.cast(correct, 'float'))
-#         print('Accuracy:', sess.run([prediction, yy, accuracy], {xx: mnist.test.features.reshape((-1,
-# n_chuncks, chunck_size)),
-#                                           yy: mnist.test.labels}))
-#         # Save the variables to disk.
-#         save_path = saver.save(sess, "./my_model.ckpt")
-#         print("Model saved in path: %s" % save_path)
-#
-#
-# train_neural_network(xx)

@@ -10,6 +10,7 @@ PyCharm - the name of the IDE in which the file will be created.
 """
 import logging
 import pandas
+import datetime
 import threading
 from google.cloud import bigquery
 from google.api_core import exceptions
@@ -77,6 +78,8 @@ class GoogleQuery:
         :param int last: the last N number of rows
         :return: dataframe
         """
+        start_time = datetime.time(8, 30)
+        end_time = datetime.time(15, 0)
         table = 'live_' + self._ticker
         if start:
             query = "SELECT * FROM {dataset}.{table} WHERE Time > '{limit}'" .format(dataset=self.dataset_id,
@@ -92,6 +95,8 @@ class GoogleQuery:
         rows = [row.values() for row in query_job]
         result = pandas.DataFrame(data=rows, columns=['Time', 'Price', 'Volume'])
         result = result.set_index('Time')
+        if not result.empty:
+            result = result[(result.index.time > start_time) & (result.index.time < end_time)]
         return result
 
     def write(self, rows):

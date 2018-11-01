@@ -11,21 +11,22 @@ PyCharm - the name of the IDE in which the file will be created.
 
 from portfolio_maker.subscriber import create_subscription
 from observer import Observer
-from kernel import Strategy
 from price_fetcher.config import PROJECT_ID
 from price_fetcher.publisher import list_topics
 from price_fetcher.config import TICKERS
 import time
+import datetime
 
 
 if __name__ == '__main__':
     topics = list_topics(PROJECT_ID)
-    topics = [str(topic).split('/')[-1][:-2] for topic in topics if 'live_publisher_' in str(topic)]
+    topics = [str(topic).split('/')[-1][:-2] for topic in topics if 'simulator' in str(topic)]
     subscriptions = [create_subscription(PROJECT_ID, topic, 'live_writer_' + str(i))
-                     for i, topic in enumerate(topics[:1])]
-    observer = Observer(tickers=['AAPL'])
+                     for i, topic in enumerate(topics)]
+    observer = Observer(tickers=['AAPL'], start_date=datetime.date(2018, 10, 18))
     observer.initiate()
     for i in range(len(topics)):
         observer.receive_messages(PROJECT_ID, 'live_writer_' + str(i))
     while True:
+        # print('PRINTING!', observer.instruments)
         time.sleep(60)

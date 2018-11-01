@@ -54,5 +54,4 @@ TICKERS = ['MMM',
            'V',
            'WMT',
            'WBA',
-           'DIS'
            ]

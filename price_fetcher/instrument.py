@@ -13,8 +13,8 @@ import datetime
 import pytz
 import logging
 from requests import exceptions
-from bigquery import GoogleQuery
-from stock_api import Iex
+from price_fetcher.bigquery import GoogleQuery
+from price_fetcher.stock_api import Iex
 
 
 logger = logging

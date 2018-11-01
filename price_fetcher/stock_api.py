@@ -42,7 +42,11 @@ class Iex:
             if self._api == 'iex':
                 return self.get_api().quote().get('latestVolume')
             elif self._api == 'iexfinance':
-                return float(self.get_api().get_volume())
+                vol = self.get_api().get_volume()
+                if vol:
+                    return float(vol)
+                else:
+                    return 0.
         except iexfinance.utils.exceptions.IEXQueryError:
             return None
 

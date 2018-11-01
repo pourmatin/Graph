@@ -9,12 +9,11 @@ Hossein - the login name of the current user.
 PyCharm - the name of the IDE in which the file will be created.
 """
 
-from instrument import Instrument
-from publisher import create_topic
-from config import PROJECT_ID
+from price_fetcher.instrument import Instrument
+from price_fetcher.publisher import create_topic
+from price_fetcher.config import PROJECT_ID
 from google.cloud import pubsub_v1
 import pickle
-import pandas
 import logging
 import threading
 
