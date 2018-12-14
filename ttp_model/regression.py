@@ -10,185 +10,187 @@ PyCharm - the name of the IDE in which the file will be created.
 """
 
 import tensorflow as tf
-import logging
-from functools import lru_cache
+import numpy as np
+import pandas as pd
+import os
 # from price_fetcher.config import TICKERS
-from ttp_model.dataset import Labels
 from tensorflow.python.ops import rnn, rnn_cell
-from ttp_model.utility import build
+from ttp_model import utility
 
 # logging.basicConfig(filename='info.log', level=logging.INFO)
-
-
-class Model:
-    """
-    The class to create and train the learning model
-    """
-    def __init__(self, dataset, epochs=10, nodes=None, layers=1, batches=100, learning_rate=.01):
-        self.dataset = dataset
-        self.hm_epochs = epochs
-        self.n_features = dataset.train.features.shape[1]
-        self.n_labels = dataset.train.labels.shape[1]
-        self.n_nodes = nodes or [32] * layers
-        self.n_layers = layers
-        self.n_datapoints = dataset.train.features.shape[0]
-        self._batch_size = batches
-        self._lr = learning_rate
-        self.xx = tf.placeholder('float32', [None, self.n_features], name='features')
-        self.yy = tf.placeholder('float32', [None, self.n_labels], name='labels')
-
-    @staticmethod
-    def _weights(shape, name=None):
-        initializer = tf.random_normal(shape)
-        return tf.Variable(initializer, name=name)
-
-    @lru_cache()
-    def _model(self, data):
-        dim = [self.n_features] + self.n_nodes + [self.n_labels]
-        weights = [self._weights([dim[i], dim[i + 1]]) for i in range(len(dim) - 1)]
-        bias = [self._weights([dim[i + 1]]) for i in range(len(dim) - 1)]
-
-        activation = data
-        layer = None
-        for i in range(len(dim) - 1):
-            layer = tf.add(tf.matmul(activation, weights[i]), bias[i], name='logits')
-            activation = tf.nn.sigmoid(layer)
-        return layer
-
-    def train(self):
-        """
-        the traing function
-        :return: None
-        """
-        logits = self._model(self.xx)
-        # loss = tf.sqrt(tf.reduce_mean(tf.square(self.yy - logits)))
-        loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=self.yy))
-        optimize = tf.train.AdamOptimizer(learning_rate=self._lr).minimize(loss)
-
-        init = tf.global_variables_initializer()
-        saver = tf.train.Saver()
-        with tf.Session() as sess:
-            sess.run(init)
-            for epoch in range(1, self.hm_epochs + 1):
-                for _ in range(self.n_datapoints // self._batch_size):
-                    epoch_x, epoch_y = self.dataset.train.next_batch(self._batch_size)
-                    sess.run(optimize, feed_dict={self.xx: epoch_x,
-                                                  self.yy: epoch_y})
-                loss_tr = sess.run(loss, feed_dict={self.xx: self.dataset.train.features,
-                                                    self.yy: self.dataset.train.labels})
-                print('Epoch {0}, Loss: {1}'.format(epoch, loss_tr))
-
-            correct = tf.equal(tf.argmax(logits, 1), tf.argmax(self.yy, 1))
-            accuracy = tf.reduce_mean(tf.cast(correct, 'float'))
-            print('Accuracy:', sess.run([logits, accuracy], {self.xx: self.dataset.test.features,
-                                                             self.yy: self.dataset.test.labels}))
-            saver.save(sess, "./my_model.ckpt")
-            logging.info('Saved the model!')
 
 
 class RnnModel:
     """
     The class to create and train the learning model
     """
-    FINE = .001
 
-    def __init__(self, dataset, epochs=10, nodes=None, layers=1, batches=100, learning_rate=.01):
+    def __init__(self, dataset, tickers, bins, epochs=10, lstm_size=128, learning_rate=.01):
         self.dataset = dataset
+        self.tickers = tickers
         self.hm_epochs = epochs
         self.n_features = dataset.train.features.shape[1]
         self.n_labels = dataset.train.labels.shape[1]
-        self.n_nodes = nodes or [32] * layers
-        self.n_layers = layers
         self.n_datapoints = dataset.train.features.shape[0]
-        self._batch_size = batches
+        self._lstm_size = lstm_size
         self._lr = learning_rate
-        self.xx = tf.placeholder('float32', [None, 1, self.n_features], name='features')
-        self.yy = tf.placeholder('float32', name='labels')
+        self._keep_prob = 0.8
+        self.xx = None
+        self.yy = None
+        self.bins = bins
 
-    @staticmethod
-    def _weights(shape, name=None):
-        initializer = tf.random_normal(shape)
-        return tf.Variable(initializer, name=name)
+    def build_lstm_graph(self):
+        """
+        Build the lstm graph without the input data
+        :return: the graph
+        """
+        tf.reset_default_graph()
+        lstm_graph = tf.Graph()
 
-    @lru_cache()
-    def _model(self, data):
-        layer = {'weights': tf.Variable(tf.random_normal([self._batch_size, self.n_labels])),
-                 'biases': tf.Variable(tf.random_normal([self.n_labels]))}
-        x = tf.transpose(data, [1, 0, 2])
-        x = tf.reshape(x, [-1, self.n_features])
-        x = tf.split(x, 1)
+        with lstm_graph.as_default():
+            self.xx = tf.placeholder('float32', [None, 1, self.n_features], name='features')
+            self.yy = tf.placeholder('float32', name='labels')
+            self.bins = tf.constant(self.bins, name='bins')
+            with tf.name_scope("output_layer"):
+                weight = tf.Variable(tf.random_normal([self._lstm_size, self.n_labels]), name='weights')
+                biases = tf.Variable(tf.random_normal([self.n_labels]), name='biases')
+                x = tf.transpose(self.xx, [1, 0, 2])
+                x = tf.reshape(x, [-1, self.n_features])
+                x = tf.split(x, 1)
 
-        lstm_cell = rnn_cell.LSTMCell(self._batch_size, name='basic_lstm_cell')
-        outputs, states = rnn.static_rnn(lstm_cell, x, dtype=tf.float32)
+                lstm_cell = rnn_cell.LSTMCell(self._lstm_size, name='basic_lstm_cell')
+                outputs, _ = rnn.static_rnn(lstm_cell, x, dtype=tf.float32)
 
-        output = tf.add(tf.matmul(outputs[-1], layer['weights']), layer['biases'], name='rnn_model')
+                logits = tf.add(tf.matmul(outputs[-1], weight), biases, name='rnn_model')
 
-        return output
+                tf.summary.histogram("last_lstm_output", outputs[-1])
+                tf.summary.histogram("weights", weight)
+                tf.summary.histogram("biases", biases)
 
-    def _cost(self, args):
-        cost = 0
-        logits = args[0]
-        yy = args[1]
-        if tf.argmax(yy, 1) == Labels.BUY:
-            cost += self.FINE if tf.argmax(logits, 1) == Labels.HOLD else \
-                2 * self.FINE if tf.argmax(logits, 1) == Labels.SELL else 0
-        elif tf.argmax(yy, 1) == Labels.SELL:
-            cost += self.FINE if tf.argmax(logits, 1) == Labels.BUY else 0
-        else:
-            cost += self.FINE if tf.argmax(logits, 1) == Labels.BUY else 0
-        return cost
+            with tf.name_scope("train"):
+                correct = tf.equal(tf.argmax(logits, 1), tf.argmax(self.yy, 1))
+                accuracy = tf.reduce_mean(tf.cast(correct, 'float'), name='accuracy')
+                loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=self.yy),
+                                      name='loss'
+                                      )
+                tf.train.AdamOptimizer().minimize(loss, name="loss_mse_adam_minimize")
+                tf.summary.scalar("loss", loss)
+                tf.summary.scalar("accuracy", accuracy)
+
+            # Operators to use after restoring the model
+            for op in [logits, loss]:
+                tf.add_to_collection('ops_to_restore', op)
+
+        return lstm_graph
 
     def train(self):
         """
-        the traing function
-        :return: None
+        training function
+        :return:
         """
-        logits = self._model(self.xx)
-        cost = tf.reduce_mean(tf.map_fn(self._cost, (logits, self.yy), dtype=tf.float32))
-        # cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=self.yy))
-        optimizer = tf.train.AdamOptimizer().minimize(cost)
+        lstm_graph = self.build_lstm_graph()
+        graph_name = "{0}_ticker{1}_lr{2}_lstm{3}_features{4}_epoch".format(self.tickers,
+                                                                            self._lr,
+                                                                            self._lstm_size,
+                                                                            self.n_features,
+                                                                            self.hm_epochs
+                                                                            )
 
-        with tf.Session() as sess:
-            sess.run(tf.global_variables_initializer())
-            saver = tf.train.Saver()
+        print("Graph Name:", graph_name)
 
+        with tf.Session(graph=lstm_graph) as sess:
+            merged_summary = tf.summary.merge_all()
+            writer = tf.summary.FileWriter('_logs/' + graph_name, sess.graph)
+            writer.add_graph(sess.graph)
+
+            graph = tf.get_default_graph()
+            tf.global_variables_initializer().run()
+
+            input = self.dataset.test.features.reshape((-1, 1, self.n_features))
+            test_data_feed = {self.xx: input, self.yy: self.dataset.test.labels}
+
+            loss = graph.get_tensor_by_name('train/loss:0')
+            minimize = graph.get_operation_by_name('train/loss_mse_adam_minimize')
+            prediction = graph.get_tensor_by_name('output_layer/rnn_model:0')
+            accuracy = graph.get_tensor_by_name('train/accuracy:0')
+
+            _summary = None
             for epoch in range(self.hm_epochs):
-                epoch_loss = 0
-                for _ in range(int(self.dataset.train.num_examples / self._batch_size)):
-                    epoch_x, epoch_y = self.dataset.train.next_batch(self._batch_size)
-                    epoch_x = epoch_x.reshape((self._batch_size, 1, self.n_features))
+                n_batch = int(self.dataset.train.num_examples / self._lstm_size)
+                for _ in range(n_batch):
+                    epoch_x, epoch_y = self.dataset.train.next_batch(self._lstm_size)
+                    epoch_x = epoch_x.reshape((self._lstm_size, 1, self.n_features))
 
-                    _, c = sess.run([optimizer, cost], feed_dict={self.xx: epoch_x, self.yy: epoch_y})
-                    epoch_loss += c
+                    train_loss, _ = sess.run([loss, minimize], feed_dict={self.xx: epoch_x, self.yy: epoch_y})
 
-                print('Epoch', epoch, 'completed out of', self.hm_epochs, 'loss:', epoch_loss)
+                if epoch % 10 == 0:
+                    test_acc, _summary = sess.run([accuracy, merged_summary], test_data_feed)
+                    print("Epoch {0}: {1}".format(epoch, test_acc))
 
-            correct = tf.equal(tf.argmax(logits, 1), tf.argmax(self.yy, 1))
+                writer.add_summary(_summary, global_step=epoch)
 
-            accuracy = tf.reduce_mean(tf.cast(correct, 'float'))
-            print('Logits:', logits.eval({self.xx: self.dataset.test.features.reshape((-1, 1, self.n_features))}))
+            print("Final Results:")
+            test_acc, final_loss = sess.run([accuracy, loss], test_data_feed)
+            print(test_acc, final_loss)
+
+            graph_saver_dir = os.path.join(MODEL_DIR, graph_name)
+            if not os.path.exists(graph_saver_dir):
+                os.mkdir(graph_saver_dir)
+
+            saver = tf.train.Saver()
+            saver.save(sess, os.path.join(graph_saver_dir, "stock_rnn_model_%s.ckpt" % graph_name),
+                       global_step=self.hm_epochs)
+
+        # with open("final_predictions.{}.json".format(graph_name), 'w') as fout:
+        #     fout.write(json.dumps(final_prediction.tolist()))
+
+
+            logit = tf.argmax(prediction, 1)
+            nn = 120
+            for i in range(nn):
+                l, = sess.run([logit], feed_dict={self.xx: input})
+                input = np.delete(input, -1, 2)
+                input = np.insert(input, [0], l.reshape(-1, 1, 1), 2)
+
+            df = pd.DataFrame()
+            df['Real'] = np.argmax(self.dataset.test.labels, 1)[:121]
+            df['Predict'] = input[0].reshape(-1)
+            df.to_csv('./test.csv')
+            # probability = tf.nn.softmax(prediction)
+            # target = tf.argmax(self.yy, 1)
+            # t, a, p = sess.run([target, logit, probability],
+            #                 feed_dict={self.xx: self.dataset.test.features.reshape((-1, 1, self.n_features)),
+            #                            self.yy: self.dataset.test.labels.reshape((-1, self.n_labels))})
+            # pp = np.max(p, 1)
+            # for i, j, k in zip(a, t, pp):
+            #     print(i, j, k)
+            #     if i != j:
+            #         print('HERE!')
+            target = self.dataset.test.labels
+            target = np.delete(target, [i for i in range(nn)], 0)
+            input = np.delete(input, [i for i in range(input.shape[0] - 1, input.shape[0]- nn - 1, -1)], 0)
             print('Accuracy:',
-                  accuracy.eval({self.xx: self.dataset.test.features.reshape((-1, 1, self.n_features)),
-                                 self.yy: self.dataset.test.labels}))
-            saver.save(sess, "./my_model.ckpt")
-            logging.info('Saved the model!')
+                  accuracy.eval({self.xx: input,
+                                 self.yy: target}))
 
+
+MODEL_DIR = './'
+import datetime
 
 def main():
     """
     the main function
     :return: None
     """
-    data = build(['BAC'],
-                 pos_limit=.001,
-                 path='./data.xlsx',
-                 period=1200,
-                 resample=1,
-                 # start_date=datetime.date(2018,10,10)
-                 )
-    model = RnnModel(data, epochs=100, layers=4, batches=128)
-    model.train()
-    # model.test()
+    utility.build()
+
+    # dp = utility.DataProcessor(tickers,
+    #                    # start_date=datetime.date(2018, 11, 20),
+    #                    path='./data.xlsx'
+    #                    )
+    # data, bins = dp.build()
+    # model = RnnModel(data, tickers=tickers, bins=bins, epochs=200, learning_rate=.001)
+    # model.train()
 
 
 if __name__ == '__main__':

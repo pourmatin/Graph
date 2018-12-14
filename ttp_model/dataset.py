@@ -12,6 +12,7 @@ PyCharm - the name of the IDE in which the file will be created.
 import numpy
 import datetime
 import collections
+import numpy as np
 
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import random_seed

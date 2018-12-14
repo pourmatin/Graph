@@ -14,9 +14,17 @@ import pandas as pd
 import copy
 import time
 import logging
-
+import os
+import numpy as np
 from ttp_model.dataset import Labels, Datasets, DataSet
 from price_fetcher.bigquery import GoogleQuery
+from sklearn.preprocessing import MinMaxScaler
+from sklearn import preprocessing
+from ttp_model.dataset import Labels, Datasets, DataSet
+from price_fetcher.bigquery import GoogleQuery
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+
 
 logging.basicConfig(filename='info.log', level=logging.INFO)
 
@@ -45,8 +53,6 @@ def get_raw_data(ticker, start_date=None):
     google = GoogleQuery(ticker, dataset_id='my_dataset')
     query = google.query(start=start_date)
     query = query.sort_index()
-    query['Ticker'] = ticker
-    logging.info(ticker)
     return query
 
 
@@ -58,7 +64,6 @@ def process_query(query, freq=10):
     :return:
     """
     dates = list(set(query.index.date))
-    ticker = query.iloc[0].Ticker
     result = pd.DataFrame(columns=['Price', 'Volume'])
     for date in dates:
         _start = query[query.index.date == date].index[0]
@@ -70,7 +75,6 @@ def process_query(query, freq=10):
         df = pd.merge_asof(df, query.sort_index(), left_index=True, right_index=True)
         df = df.rename(columns={'Price_y': 'Price', 'Volume_y': 'Volume'})
         df = df.drop([col for col in df.columns if col.endswith('_x')], axis=1)
-        df['Ticker'] = ticker
         if not df.empty:
             p0 = df.iloc[0].Price
             df['Change'] = df.apply(lambda x: (x.Price - p0) / p0, axis=1)
@@ -89,13 +93,13 @@ def moving_average(data, period, ma_type=None, field=None):
     :return: a dataframe with the moving average
     """
     ma_type = ma_type or 'sma'
-    freq = (data.index[1] - data.index[0]).seconds
+    #     freq = (data.index[1] - data.index[0]).seconds
     if field:
         data = data[field]
     if ma_type.lower() == 'sma':
-        profile = data.rolling(int(period / freq), min_periods=0).mean()
+        profile = data.rolling(period, min_periods=0).mean()
     elif ma_type.lower() == 'ema':
-        profile = data.ewm(span=int(period / freq)).mean()
+        profile = data.ewm(span=period).mean()
     else:
         raise ValueError('{0} is not a known moving average type!'.format(ma_type))
     return profile
@@ -113,7 +117,7 @@ def moving_standard_deviation(data, period, ma_type=None, field=None):
     field = field or 'Price'
     freq = (data.index[1] - data.index[0]).seconds
     if ma_type.lower() == 'sma':
-        profile = pd.rolling_std(data[field], period / freq, min_periods=0)
+        profile = pd.rolling_std(data[field], period, min_periods=0)
     elif ma_type.lower() == 'ema':
         mean = moving_average(data, period, ma_type=ma_type, field=field)
         mean_sq = mean * mean
@@ -144,28 +148,7 @@ def relative_strength_index(df, period, field=None):
     return temp.apply(lambda x: 100 - 100 / (1 + x.AG / x.AL) if x.AL != 0 else 0, axis=1)
 
 
-@timeit
-def cluster(data, resample, freq='min'):
-    """
-    method to cluster the similar labels together
-    :param data:
-    :param resample:
-    :param freq:
-    :return:
-    """
-
-    num_cols = {col: 'ohlc' for col in data.columns if col.startswith('F') or col.startswith('dF')}
-    result = data.resample(rule=str(resample) + freq).agg(num_cols)
-    result.columns = ['_'.join(col) for col in result.columns]
-    result['Label'] = data['Label'].resample(rule=str(resample) + freq, how='mean').values.astype(int)
-    start = datetime.time(8, 30)
-    end = datetime.time(15, 0)
-    result = result[(result.index.time > start) & (result.index.time < end)]
-    return result.dropna(subset=['F0_open'])
-
-
-@timeit
-def classify(data, frwd, pos_limit, neg_limit):
+def classify(data, frwd, pos_limit=.001, neg_limit=-.001):
     """
     the classifier method to get the labels for the training data
     :param data: dataframe
@@ -176,114 +159,132 @@ def classify(data, frwd, pos_limit, neg_limit):
     """
     temp = copy.deepcopy(data)
 
-    def _set_label(row):
-        ts = (row.name - numpy.datetime64('1970-01-01T00:00:00Z')) / numpy.timedelta64(1, 's')
-        start = datetime.datetime.utcfromtimestamp(ts)
-        date = start.date()
-        eod = datetime.datetime(date.year, date.month, date.day, 15, 0)
-        end = start + datetime.timedelta(seconds=frwd)
-        end = min([end, eod])
-        subset = copy.deepcopy(temp.loc[start:end])
-        p0 = subset.MA.iloc[0]
-        p_up = (pos_limit + 1.) * p0
-        p_down = (neg_limit + 1.) * p0
-        high = subset.MA[(subset.MA.shift(1) > subset.MA) & (subset.MA.shift(-1) > subset.MA) & (subset.MA > p_up)]
-        low = subset.MA[(subset.MA.shift(1) < subset.MA) & (subset.MA.shift(-1) < subset.MA) & (subset.MA < p_down)]
-        if high.empty:
-            return Labels.HOLD if low.empty else Labels.SELL
-        elif low.empty:
-            return Labels.HOLD if high.empty else Labels.BUY
-        else:
-            return Labels.BUY if high.index[0] > low.index[0] else Labels.SELL
+    temp['change'] = temp['Price'].diff() / temp['Price'].shift()
+    return temp['change'].apply(lambda x: 1 if x > pos_limit else 0)
 
-    temp['MA'] = moving_average(temp, period=60, ma_type='sma', field='Price')
-    return temp.apply(_set_label, axis=1)
+
+def macd(data, field):
+    ma12 = data[field].ewm(span=12).mean()
+    ma26 = data[field].ewm(span=26).mean()
+    return ma12 - ma26
 
 
 @timeit
-def add_feature(data):
-    """
-    creates the features
-    :param data:
-    :return:
-    """
-    # period = 1200
-    # ema_name = 'Fema' + str(period // 60)
-    # sigma_name = 'Fsigma' + str(period // 60)
-    # n_name = 'Fn'
-    rsi_name = 'FRSI' + str(36)
-    # streak = 'Fstreak'
-    nstreak = 10
-    #
-    # cols = ['diff' + str(i) for i in range(1, nstreak)]
-    #
-    # def _find_streak(row):
-    #     for i, column in enumerate(cols[:-1]):
-    #         if (row[cols[i]] - row[cols[i+1]]) * (row['Price'] - row[cols[0]]) <= 0:
-    #             return int(column[4:])
-    #     return int(cols[-1][4:])
-    #
-    # data[ema_name] = moving_average(data, period=period, ma_type='ema', field='Change')
-    # data[sigma_name] = moving_standard_deviation(data, period=period, ma_type='ema', field='Change')
-    # data[n_name] = data.apply(lambda x: (x['Change'] - x[ema_name]) / x[sigma_name] if x[sigma_name] != 0 else 0,
-    #                           axis=1)
-    data[rsi_name] = relative_strength_index(data, 36)
-    temp = copy.deepcopy(data)
-    for i in range(1, nstreak):
-        temp['diff' + str(i)] = data['Price'].shift(i)
-
-    # data[streak] = temp.apply(_find_streak, axis=1)
-    # cols = [rsi_name, streak, ema_name, sigma_name, n_name]
-    # for col in cols:
-    #     data['d' + col] = data[col].diff()
-    temp['MA'] = moving_average(data, period=240, ma_type='sma', field='Change')
-    temp['REF'] = temp['MA'].shift(nstreak)
-    for i in range(nstreak):
-        data['F' + str(i)] = temp['MA'].shift(i) - temp['REF']
-    return data
-
-
-@timeit
-def build(tickers, period, resample=5, frwd=1200, pos_limit=.003, neg_limit=-.001, start_date=None, path=None):
+def build():
     """
     The main method to create the database
     :return: dataframe of features and labels
     """
-    if path:
-        data = pd.read_excel(path)
-    else:
-        data = pd.DataFrame(columns=['Price', 'Volume', 'Label'])
-        for ticker in tickers:
-            query = get_raw_data(ticker, start_date)
-            if query.empty:
-                continue
-            _data = process_query(query)
-            _data = add_feature(_data)
-            _data['Label'] = classify(_data, frwd=frwd, pos_limit=pos_limit, neg_limit=neg_limit)
-            freq = (_data.index[1] - _data.index[0]).seconds
-            _data = _data[period:-frwd//(freq * resample)]
-            # _data = cluster(_data, resample)
-            data = _data.append(_data)
-        writer = pd.ExcelWriter('./data.xlsx', engine='xlsxwriter')
-        data.to_excel(writer)
-        writer.save()
+    rootdir = '/Users/Hossein/Downloads/NYSE_2018/'
+    query = pd.DataFrame()
+    for subdir, dirs, files in os.walk(rootdir):
+        for file in files:
+            query = query.append(pd.read_csv(subdir + file))
+    query = query.rename(columns={'<close>': 'Price', '<ticker>': 'Ticker'})
+    query['Time'] = query['<date>'].apply(lambda x: datetime.datetime.strptime(str(x), '%Y%m%d'))
+    dataset = query.set_index('Time')
+    dataset = dataset[dataset['<vol>'] > 0]
+    dataset['dummyindex'] = dataset.index
+    dataset = dataset.sort_values(['Ticker', 'dummyindex'])
+    dataset['Change'] = dataset['Price'].diff() / dataset['Price'].shift()
+    dataset = dataset[abs(dataset['Change']) < .05]
+    dataset['Label'] = dataset['Change'].apply(lambda x: 1 if x > .01 else 0)
+    data = dataset.groupby('Ticker').max()['Price']
+    dataset = dataset.merge(pd.DataFrame(data=data), left_on='Ticker', right_index=True)
+    dataset['scaled'] = dataset.Price_x / dataset.Price_y
+    dataset.drop(['<date>', '<high>', '<low>', '<open>', 'dummyindex', 'Price_x', 'Price_y'], inplace=True, axis=1)
+    dataset['SMA60'] = dataset['scaled'].rolling(window=60, min_periods=0, center=False).mean()
+    dataset['STD'] = dataset['scaled'].rolling(window=60, min_periods=0, center=False).std()
+    dataset = dataset[dataset.STD > 0]
+    dataset['N'] = (dataset['scaled'] - dataset['SMA60']) / dataset['STD']
+    dataset['RSI'] = relative_strength_index(dataset, period=14, field='scaled')
+    dataset['MACD'] = macd(dataset, 'scaled')
+    dataset['Date'] = dataset.index.date
+    dataset['Day'] = dataset['Date'].apply(lambda x: x.day)
+    dataset['Month'] = dataset['Date'].apply(lambda x: x.month)
+    dataset['Year'] = dataset['Date'].apply(lambda x: x.year)
+    dataset = dataset.dropna()
 
-    holds = len(data)
-    buys = len(data[data.Label == Labels.BUY])
-    weights = data.apply(lambda x: .0001 if x.Label == Labels.HOLD else 1, axis=1)
-    data = data.sample(frac=2. * float(buys)/float(holds), weights=weights)
-    tr_ind = data[data.index.date >= datetime.date(2018, 10, 1)].index
-    y_tr = data[data.index.isin(tr_ind)]['Label'].values.astype(int)
-    y_ts = data[~data.index.isin(tr_ind)]['Label'].values.astype(int)
-    features = [col for col in data.columns if col.startswith('F') or col.startswith('dF')]
-    data = data[features]
-    x_tr = data[data.index.isin(tr_ind)].values
-    x_tr = x_tr.reshape(x_tr.shape[0], x_tr.shape[1], 1, 1)
-    x_ts = data[~data.index.isin(tr_ind)].values
-    x_ts = x_ts.reshape(x_ts.shape[0], x_ts.shape[1], 1, 1)
-    y_tr = numpy.reshape(y_tr, -1)
-    y_ts = numpy.reshape(y_ts, -1)
-    dataset = Datasets(train=DataSet(x_tr, y_tr, one_hot=True, hm_classes=2),
-                       test=DataSet(x_ts, y_ts, one_hot=True, hm_classes=2)
-                       )
-    return dataset
+    ticker_dummy = pd.get_dummies(dataset['Ticker'], prefix='ticker')
+    data = dataset.join(ticker_dummy)
+    le = preprocessing.LabelEncoder()
+    le.fit(dataset['Ticker'].values)
+    feature_list = ['N', 'RSI', 'MACD', 'Day', 'SMA60'] + ['ticker_' + i for i in le.classes_]
+    data = data[feature_list + ['Label']]
+
+    X_train, X_test, y_train, y_test = train_test_split(X, dataset[y], test_size=0.3, random_state=2)
+    logreg = LogisticRegression()
+    logreg.fit(X_train, y_train)
+    y_pred = logreg.predict(X_test)
+    print('Accuracy of logistic regression classifier on test set: {0}%'.format(logreg.score(X_test, y_test) * 100))
+    from sklearn.metrics import confusion_matrix
+    confusion_matrix = confusion_matrix(y_test, y_pred)
+    print(confusion_matrix)
+
+
+class DataProcessor:
+    def __init__(self, tickers, frwd=1200, start_date=None, path=None):
+        """
+
+        :param tickers:
+        :param frwd:
+        :param start_date:
+        :param path:
+        """
+        self._tickers = tickers
+        self._forward = frwd
+        self._start = start_date
+        self._path = path
+        self.n_labels = 20
+
+    def featurize(self, data):
+        _, bins = np.histogram(data['Change'].values, bins=self.n_labels)
+        data['F0'] = data['Change'].apply(lambda x: max([np.searchsorted(bins, x) - 1, 0]))
+        for i in range(120):
+            data['F' + str(i + 1)] = data['Change'].shift(i).apply(lambda x: max([np.searchsorted(bins, x) - 1, 0]))
+        data['Label'] = data['Change'].shift(-1).apply(lambda x: max([np.searchsorted(bins, x) - 1, 0]))
+        return data
+
+    def build(self, period=120):
+        """
+        The main method to create the database
+
+        :return:
+        """
+        if self._path:
+            data = pd.read_excel(self._path)
+        else:
+            data = pd.DataFrame()
+            for ticker in self._tickers:
+                query = get_raw_data(ticker, self._start)
+                if query.empty:
+                    continue
+                print('got the data')
+                _data = process_query(query)
+                print('processed the data')
+                _data = self.featurize(_data)
+                print('featurized the data')
+                freq = (_data.index[1] - _data.index[0]).seconds
+                _data = _data[period:-self._forward//(freq)]
+                data = data.append(_data)
+            writer = pd.ExcelWriter('./data.xlsx', engine='xlsxwriter')
+            data.to_excel(writer)
+            writer.save()
+
+        tr_ind = data[data.index.date >= datetime.date(2018, 11, 1)].index
+        y_tr = data[data.index.isin(tr_ind)]['Label'].values.astype(int)
+        y_ts = data[~data.index.isin(tr_ind)]['Label'].values.astype(int)
+        features = [col for col in data.columns if col.startswith('F') or col.startswith('dF')]
+        changes = data['Change']
+        data = data[features]
+        x_tr = data[data.index.isin(tr_ind)].values
+        x_tr = x_tr.reshape(x_tr.shape[0], x_tr.shape[1], 1, 1)
+        x_ts = data[~data.index.isin(tr_ind)].values
+        x_ts = x_ts.reshape(x_ts.shape[0], x_ts.shape[1], 1, 1)
+        y_tr = numpy.reshape(y_tr, -1)
+        y_ts = numpy.reshape(y_ts, -1)
+        dataset = Datasets(train=DataSet(x_tr, y_tr, one_hot=True, hm_classes=self.n_labels),
+                           test=DataSet(x_ts, y_ts, one_hot=True, hm_classes=self.n_labels)
+                           )
+        _, bins = np.histogram(changes.values, bins=self.n_labels)
+        return dataset, bins
